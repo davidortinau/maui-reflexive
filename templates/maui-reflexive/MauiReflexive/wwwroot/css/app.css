@@ -1,0 +1,73 @@
+html, body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background-color: #f5f5f5;
+    color: #333;
+}
+
+h1, h2 {
+    color: #512BD4;
+}
+
+.status-bar-safe-area {
+    display: none;
+}
+
+.getting-started {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    max-width: 600px;
+}
+
+.getting-started ol {
+    padding-left: 1.5rem;
+}
+
+.getting-started li {
+    margin-bottom: 0.5rem;
+    line-height: 1.6;
+}
+
+main {
+    padding: 1.5rem;
+}
+
+#blazor-error-ui {
+    background: lightyellow;
+    bottom: 0;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    display: none;
+    left: 0;
+    padding: 0.6rem 1.25rem 0.7rem 1.25rem;
+    position: fixed;
+    width: 100%;
+    z-index: 1000;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.75rem;
+    top: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+    html, body {
+        background-color: #1a1a2e;
+        color: #e0e0e0;
+    }
+
+    h1, h2 {
+        color: #b39ddb;
+    }
+
+    .getting-started {
+        background: #16213e;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+}

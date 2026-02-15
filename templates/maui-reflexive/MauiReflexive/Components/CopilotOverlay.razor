@@ -1,0 +1,602 @@
+@* Copilot Overlay — Floating FAB + expandable chat panel. *@
+@* Only rendered in DEBUG builds via MainLayout.razor's IsDebug check. *@
+
+@using MauiReflexive.Models
+@using MauiReflexive.Services
+@using Markdig
+@inject CopilotService CopilotService
+@inject CopilotInitService InitService
+@inject IJSRuntime JS
+@implements IDisposable
+
+@* Floating Action Button *@
+<button class="copilot-fab @(isOpen ? "overlay-open" : "")"
+        @onclick="ToggleOverlay"
+        title="@(isOpen ? "Minimize Copilot" : "Open Copilot")">
+    @if (isOpen)
+    {
+        <span>▼</span>
+    }
+    else
+    {
+        <span>🤖</span>
+    }
+</button>
+
+@if (isOpen)
+{
+    <div class="copilot-overlay-backdrop" @onclick="CloseOverlay">
+        <div class="copilot-overlay @(isClosing ? "closing" : "")" @onclick:stopPropagation="true">
+            @* Header *@
+            <div class="overlay-header">
+                <div class="header-title">
+                    <span>🤖</span>
+                    <span>GitHub Copilot</span>
+                    @if (IsCopilotConnected)
+                    {
+                        <span class="status-badge connected">Connected</span>
+                    }
+                    else
+                    {
+                        <span class="status-badge disconnected">Disconnected</span>
+                    }
+                </div>
+                <button class="btn-minimize" @onclick="CloseOverlay" title="Minimize">▼</button>
+            </div>
+
+            @* Init steps (shown on first open) *@
+            @if (showInit)
+            {
+                <div class="init-panel">
+                    <h3>Setting up Copilot...</h3>
+                    @foreach (var step in InitService.Steps)
+                    {
+                        <div class="init-step @step.Status.ToString().ToLower()">
+                            <span class="init-icon">
+                                @switch (step.Status)
+                                {
+                                    case InitStepStatus.Pending: <text>⏳</text> break;
+                                    case InitStepStatus.Running: <text>⏳</text> break;
+                                    case InitStepStatus.Success: <text>✅</text> break;
+                                    case InitStepStatus.Warning: <text>⚠️</text> break;
+                                    case InitStepStatus.Failed: <text>❌</text> break;
+                                }
+                            </span>
+                            <div class="init-detail">
+                                <strong>@step.Name</strong>
+                                @if (step.Detail != null)
+                                {
+                                    <div class="init-detail-text">@step.Detail</div>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @if (initComplete)
+                    {
+                        <button class="btn-continue" @onclick="FinishInit">Continue</button>
+                    }
+                </div>
+            }
+            else
+            {
+                @* Chat area *@
+                <div class="chat-area" @ref="chatContainer">
+                    @if (!messages.Any())
+                    {
+                        <div class="chat-welcome">
+                            <p>Describe the app or feature you want to build.</p>
+                            <p>Copilot will write the code and rebuild the app automatically.</p>
+                        </div>
+                    }
+                    @foreach (var msg in messages)
+                    {
+                        <div class="chat-msg @msg.Role">
+                            <div class="msg-role">@(msg.Role == "user" ? "You" : "Copilot")</div>
+                            <div class="msg-content">@((MarkupString)RenderMarkdown(msg.Content))</div>
+                        </div>
+                    }
+                    @if (IsCopilotBusy)
+                    {
+                        <div class="chat-msg assistant">
+                            <div class="msg-role">Copilot</div>
+                            <div class="msg-content streaming">
+                                @((MarkupString)RenderMarkdown(streamingContent))
+                                <span class="cursor">▊</span>
+                            </div>
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(currentTool))
+                    {
+                        <div class="tool-indicator">🔧 @currentTool</div>
+                    }
+                    @if (!string.IsNullOrEmpty(copilotIntent))
+                    {
+                        <div class="intent-indicator">💭 @copilotIntent</div>
+                    }
+                </div>
+
+                @* Input area *@
+                <div class="input-area">
+                    <textarea @bind="userInput" @bind:event="oninput"
+                              @onkeydown="HandleKeyDown"
+                              placeholder="Describe what you want to build..."
+                              rows="2"
+                              disabled="@IsCopilotBusy"></textarea>
+                    <button class="btn-send" @onclick="SendMessage"
+                            disabled="@(IsCopilotBusy || string.IsNullOrWhiteSpace(userInput))">
+                        ➤
+                    </button>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+<style>
+    .copilot-fab {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 1.5rem;
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        border: none;
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        color: white;
+        font-size: 1.5rem;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        transition: all 0.3s ease;
+        z-index: 20001;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .copilot-fab:hover { transform: scale(1.1); }
+    .copilot-fab.overlay-open {
+        background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    }
+
+    .copilot-overlay-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+        z-index: 20000;
+        display: flex;
+        align-items: flex-end;
+        justify-content: flex-start;
+        padding: 80px 2rem 80px 80px;
+        animation: fadeIn 0.2s ease;
+    }
+    @@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    .copilot-overlay {
+        width: calc(100vw - 160px);
+        max-width: 900px;
+        height: calc(100vh - 100px);
+        max-height: 800px;
+        background: #ffffff;
+        border-radius: 1rem;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        transform-origin: bottom left;
+        animation: expandFromCorner 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .copilot-overlay.closing {
+        animation: collapseToCorner 0.25s ease-in forwards;
+    }
+    @@keyframes expandFromCorner {
+        from { opacity: 0; transform: scale(0.3) translateX(-20px) translateY(20px); }
+        to { opacity: 1; transform: scale(1); }
+    }
+    @@keyframes collapseToCorner {
+        from { opacity: 1; transform: scale(1); }
+        to { opacity: 0; transform: scale(0.3) translateX(-20px) translateY(20px); }
+    }
+
+    .overlay-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 1rem 1.25rem;
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        color: white;
+    }
+    .header-title { display: flex; align-items: center; gap: 0.75rem; font-weight: 600; font-size: 1.1rem; }
+    .status-badge { font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 0.75rem; font-weight: 500; }
+    .status-badge.connected { background: rgba(52, 211, 153, 0.3); color: #a7f3d0; }
+    .status-badge.disconnected { background: rgba(251, 191, 36, 0.3); color: #fde68a; }
+    .btn-minimize {
+        background: rgba(255,255,255,0.2); border: none; color: white;
+        width: 36px; height: 36px; border-radius: 0.5rem; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .btn-minimize:hover { background: rgba(255,255,255,0.3); }
+
+    /* Init panel */
+    .init-panel { padding: 1.5rem; overflow-y: auto; flex: 1; }
+    .init-panel h3 { margin: 0 0 1rem 0; color: #6366f1; }
+    .init-step { display: flex; gap: 0.75rem; padding: 0.5rem 0; align-items: flex-start; }
+    .init-icon { font-size: 1.2rem; }
+    .init-detail-text { font-size: 0.85rem; color: #666; margin-top: 0.25rem; }
+    .btn-continue {
+        margin-top: 1rem; padding: 0.75rem 2rem; background: #6366f1; color: white;
+        border: none; border-radius: 0.5rem; cursor: pointer; font-size: 1rem;
+    }
+    .btn-continue:hover { background: #4f46e5; }
+
+    /* Chat */
+    .chat-area { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+    .chat-welcome { text-align: center; color: #888; padding: 2rem 1rem; }
+    .chat-msg { max-width: 85%; }
+    .chat-msg.user { align-self: flex-end; }
+    .chat-msg.assistant { align-self: flex-start; }
+    .msg-role { font-size: 0.75rem; color: #888; margin-bottom: 0.25rem; font-weight: 600; }
+    .msg-content {
+        padding: 0.75rem 1rem; border-radius: 0.75rem; line-height: 1.5;
+        font-size: 0.9rem; word-wrap: break-word;
+    }
+    .chat-msg.user .msg-content { background: #6366f1; color: white; }
+    .chat-msg.assistant .msg-content { background: #f3f4f6; color: #333; }
+    .msg-content pre { background: #1e1e2e; color: #cdd6f4; padding: 0.75rem; border-radius: 0.5rem; overflow-x: auto; font-size: 0.85rem; }
+    .msg-content code { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+    .msg-content p:first-child { margin-top: 0; }
+    .msg-content p:last-child { margin-bottom: 0; }
+    .streaming .cursor { animation: blink 1s infinite; }
+    @@keyframes blink { 50% { opacity: 0; } }
+
+    .tool-indicator, .intent-indicator {
+        font-size: 0.8rem; padding: 0.4rem 0.75rem; background: #f0f0ff;
+        border-radius: 0.5rem; color: #6366f1; align-self: flex-start;
+    }
+
+    /* Input */
+    .input-area {
+        display: flex; gap: 0.5rem; padding: 0.75rem 1rem;
+        border-top: 1px solid #e5e7eb; background: #fafafa;
+    }
+    .input-area textarea {
+        flex: 1; resize: none; border: 1px solid #d1d5db; border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem; font-family: inherit; font-size: 0.9rem;
+        outline: none;
+    }
+    .input-area textarea:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2); }
+    .btn-send {
+        width: 44px; height: 44px; border-radius: 50%; border: none;
+        background: #6366f1; color: white; font-size: 1.2rem; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-send:hover:not(:disabled) { background: #4f46e5; }
+
+    @@media (prefers-color-scheme: dark) {
+        .copilot-overlay { background: #1a1a2e; }
+        .chat-msg.assistant .msg-content { background: #16213e; color: #e0e0e0; }
+        .input-area { background: #16213e; border-top-color: #2d3748; }
+        .input-area textarea { background: #1a1a2e; color: #e0e0e0; border-color: #4a5568; }
+        .tool-indicator, .intent-indicator { background: #1e2447; }
+        .init-detail-text { color: #aaa; }
+        .chat-welcome { color: #888; }
+    }
+</style>
+
+@code {
+    private bool isOpen;
+    private bool isClosing;
+    private bool showInit = true;
+    private bool initComplete;
+    private string userInput = "";
+    private string streamingContent = "";
+    private string? currentTool;
+    private string? copilotIntent;
+    private readonly List<ChatMessage> messages = new();
+    private ElementReference chatContainer;
+    private bool shouldScrollToBottom;
+
+    // Wrapper properties that compile in both DEBUG and RELEASE
+    private bool IsCopilotConnected
+    {
+        get
+        {
+#if DEBUG
+            return CopilotService.IsConnected;
+#else
+            return false;
+#endif
+        }
+    }
+
+    private bool IsCopilotBusy
+    {
+        get
+        {
+#if DEBUG
+            return CopilotService.IsBusy;
+#else
+            return false;
+#endif
+        }
+    }
+
+#if DEBUG
+    protected override void OnInitialized()
+    {
+        CopilotService.OnContentDelta += HandleDelta;
+        CopilotService.OnContentComplete += HandleComplete;
+        CopilotService.OnToolStarted += HandleToolStart;
+        CopilotService.OnToolCompleted += HandleToolComplete;
+        CopilotService.OnError += HandleError;
+        CopilotService.OnStateChanged += HandleStateChanged;
+        InitService.OnStepsUpdated += HandleInitUpdate;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (shouldScrollToBottom)
+        {
+            shouldScrollToBottom = false;
+            try
+            {
+                await JS.InvokeVoidAsync("eval",
+                    "document.querySelector('.chat-area')?.scrollTo({top: document.querySelector('.chat-area')?.scrollHeight, behavior: 'smooth'})");
+            }
+            catch { }
+        }
+    }
+
+    public void Dispose()
+    {
+        CopilotService.OnContentDelta -= HandleDelta;
+        CopilotService.OnContentComplete -= HandleComplete;
+        CopilotService.OnToolStarted -= HandleToolStart;
+        CopilotService.OnToolCompleted -= HandleToolComplete;
+        CopilotService.OnError -= HandleError;
+        CopilotService.OnStateChanged -= HandleStateChanged;
+        InitService.OnStepsUpdated -= HandleInitUpdate;
+    }
+#else
+    protected override void OnInitialized() { }
+    public void Dispose() { }
+#endif
+
+    private void ToggleOverlay()
+    {
+        if (isOpen) CloseOverlay();
+        else OpenOverlay();
+    }
+
+    private async void OpenOverlay()
+    {
+        isClosing = false;
+        isOpen = true;
+        StateHasChanged();
+
+#if DEBUG
+        if (!InitService.IsInitialized)
+        {
+            // First open: run init sequence
+            showInit = true;
+            initComplete = await InitService.RunInitAsync();
+            StateHasChanged();
+
+            if (initComplete)
+            {
+                await Task.Delay(1000);
+                await StartCopilotSession();
+                showInit = false;
+                StateHasChanged();
+            }
+        }
+        else if (!CopilotService.IsSessionActive)
+        {
+            // Init already done but session not active — retry connection
+            await StartCopilotSession();
+        }
+#endif
+    }
+
+    private async void CloseOverlay()
+    {
+        isClosing = true;
+        StateHasChanged();
+        await Task.Delay(250);
+        isOpen = false;
+        isClosing = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task FinishInit()
+    {
+#if DEBUG
+        await StartCopilotSession();
+#endif
+        showInit = false;
+    }
+
+#if DEBUG
+    private async Task StartCopilotSession()
+    {
+        if (CopilotService.IsSessionActive) return;
+
+        try
+        {
+            var projectDir = GetProjectDirectory();
+
+            // Initialize client if needed
+            if (!CopilotService.IsConnected)
+            {
+                messages.Add(ChatMessage.System("Connecting to Copilot..."));
+                shouldScrollToBottom = true;
+                await InvokeAsync(StateHasChanged);
+                await CopilotService.InitializeAsync(projectDir);
+            }
+
+            // Try to resume previous session if one exists
+            var previousSessionId = CopilotService.LastSessionId;
+            if (!string.IsNullOrEmpty(previousSessionId))
+            {
+                messages.Add(ChatMessage.System("Resuming previous session..."));
+                shouldScrollToBottom = true;
+                await InvokeAsync(StateHasChanged);
+
+                try
+                {
+                    await CopilotService.ResumeSessionAsync(previousSessionId);
+                    messages.Add(ChatMessage.System("Session resumed! Continue where you left off."));
+                    shouldScrollToBottom = true;
+                    await InvokeAsync(StateHasChanged);
+                    return;
+                }
+                catch
+                {
+                    messages.Add(ChatMessage.System("Could not resume — starting fresh session."));
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+
+            // Create new session
+            var systemPrompt = SystemPromptBuilder.Build(projectDir);
+            await CopilotService.CreateSessionAsync(systemPrompt);
+
+            messages.Add(ChatMessage.System("Connected! Describe what you want to build."));
+            shouldScrollToBottom = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            messages.Add(ChatMessage.System($"Failed to start Copilot session: {ex.Message}"));
+            messages.Add(ChatMessage.System(
+                "Troubleshooting:\n" +
+                "- Ensure GitHub Copilot CLI is authenticated: run `copilot auth login` in terminal\n" +
+                "- Check that the Copilot SDK binary exists in the app bundle\n" +
+                "- Set the MAUI_REFLEXIVE_PROJECT_DIR environment variable to your project source directory"));
+            shouldScrollToBottom = true;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+#endif
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(userInput)) return;
+#if DEBUG
+        if (CopilotService.IsBusy) return;
+#endif
+
+        var prompt = userInput.Trim();
+        userInput = "";
+        streamingContent = "";
+        currentTool = null;
+        messages.Add(ChatMessage.User(prompt));
+        shouldScrollToBottom = true;
+        StateHasChanged();
+
+#if DEBUG
+        try
+        {
+            var response = await CopilotService.SendPromptAsync(prompt);
+        }
+        catch (Exception ex)
+        {
+            messages.Add(ChatMessage.System($"Error: {ex.Message}"));
+            await InvokeAsync(StateHasChanged);
+        }
+#endif
+    }
+
+    private async Task HandleKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendMessage();
+        }
+    }
+
+#if DEBUG
+    private void HandleDelta(string delta)
+    {
+        streamingContent += delta;
+        shouldScrollToBottom = true;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleComplete(string content)
+    {
+        // Each AssistantMessageEvent delivers one complete message segment.
+        // Add it directly — don't accumulate across segments.
+        if (!string.IsNullOrEmpty(content))
+        {
+            messages.Add(ChatMessage.Assistant(content));
+        }
+        streamingContent = "";
+        shouldScrollToBottom = true;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleToolStart(string toolName)
+    {
+        currentTool = toolName;
+        shouldScrollToBottom = true;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleToolComplete(string toolName, string? result)
+    {
+        currentTool = null;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleError(string error)
+    {
+        messages.Add(ChatMessage.System($"Error: {error}"));
+        shouldScrollToBottom = true;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleStateChanged()
+    {
+        copilotIntent = CopilotService.CurrentIntent;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleInitUpdate(IReadOnlyList<InitStep> steps)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+#endif
+
+    private static string GetProjectDirectory()
+    {
+        // 1. Check environment variable (most reliable — set by dev or launch config)
+        var envDir = Environment.GetEnvironmentVariable("MAUI_REFLEXIVE_PROJECT_DIR");
+        if (!string.IsNullOrEmpty(envDir) && Directory.Exists(envDir))
+            return envDir;
+
+        // 2. Check current working directory (works when launched from project dir)
+        var cwd = Environment.CurrentDirectory;
+        if (Directory.GetFiles(cwd, "*.csproj").Length > 0)
+            return cwd;
+
+        // 3. Walk up from current directory looking for .csproj
+        var dir = cwd;
+        while (dir != null)
+        {
+            if (Directory.GetFiles(dir, "*.csproj").Length > 0)
+                return dir;
+            dir = Directory.GetParent(dir)?.FullName;
+        }
+
+        // 4. Fallback: user's home directory (Copilot can still work with bash/file tools)
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private static string RenderMarkdown(string? content)
+    {
+        if (string.IsNullOrEmpty(content)) return "";
+        var pipeline = new Markdig.MarkdownPipelineBuilder()
+            .UseAdvancedExtensions()
+            .Build();
+        return Markdig.Markdown.ToHtml(content, pipeline);
+    }
+}
