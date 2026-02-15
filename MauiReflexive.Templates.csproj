@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageType>Template</PackageType>
+    <PackageVersion>0.1.0-preview.1</PackageVersion>
+    <PackageId>DavidOrtinau.MauiReflexive.Templates</PackageId>
+    <Title>.NET MAUI Reflexive Template</Title>
+    <Authors>David Ortinau</Authors>
+    <Description>.NET MAUI Blazor Hybrid template with embedded GitHub Copilot overlay. Describe what you want to build and Copilot writes the code and hot-swaps the running app.</Description>
+    <PackageTags>dotnet-new;templates;maui;blazor;copilot;mobile;desktop</PackageTags>
+    <PackageProjectUrl>https://github.com/davidortinau/maui-reflexive</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/davidortinau/maui-reflexive</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <TargetFramework>net10.0</TargetFramework>
+    <IncludeContentInPack>true</IncludeContentInPack>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <ContentTargetFolders>content</ContentTargetFolders>
+    <NoWarn>$(NoWarn);NU5128;NU5110;NU5111</NoWarn>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="templates/**/*" Exclude="templates/**/bin/**;templates/**/obj/**" />
+    <Compile Remove="**/*" />
+    <None Include="../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>

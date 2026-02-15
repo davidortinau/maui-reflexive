@@ -1,5 +1,7 @@
 bin/
 obj/
+artifacts/
+*.nupkg
 *.user
 *.suo
 .vs/

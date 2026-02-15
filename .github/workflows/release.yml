@@ -1,0 +1,93 @@
+name: Pack & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: 'Version suffix (e.g. preview.2). Leave empty to use the tag version.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            # Strip leading 'v' from tag
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          elif [[ -n "${{ github.event.inputs.version_suffix }}" ]]; then
+            VERSION="0.1.0-${{ github.event.inputs.version_suffix }}"
+          else
+            VERSION="0.1.0-preview.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: $VERSION"
+
+      - name: Pack NuGet
+        run: |
+          dotnet pack MauiReflexive.Templates.csproj \
+            -c Release \
+            -o ./artifacts \
+            /p:PackageVersion=${{ steps.version.outputs.version }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: ./artifacts/*.nupkg
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          prerelease: ${{ contains(steps.version.outputs.version, 'preview') || contains(steps.version.outputs.version, 'alpha') || contains(steps.version.outputs.version, 'beta') }}
+          generate_release_notes: true
+          files: ./artifacts/*.nupkg
+          body: |
+            ## Install
+
+            ```bash
+            dotnet new install DavidOrtinau.MauiReflexive.Templates::${{ steps.version.outputs.version }}
+            ```
+
+            Or download the `.nupkg` below and install locally:
+
+            ```bash
+            dotnet new install ./DavidOrtinau.MauiReflexive.Templates.${{ steps.version.outputs.version }}.nupkg
+            ```
+
+            ## Usage
+
+            ```bash
+            dotnet new maui-reflexive -n MyApp
+            cd MyApp
+            dotnet run -f net10.0-maccatalyst
+            ```
+
+      - name: Push to NuGet.org
+        if: github.ref_type == 'tag' && !contains(github.ref_name, 'preview')
+        run: |
+          dotnet nuget push ./artifacts/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
